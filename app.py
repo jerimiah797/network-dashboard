@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""Network Diagnostic Dashboard - Real-time monitoring with SSE."""
+
+import json
+import platform
+import queue
+import socket
+import subprocess
+import threading
+import time
+from datetime import datetime
+from flask import Flask, Response, render_template
+
+app = Flask(__name__)
+
+# Host/service configuration
+HOSTS = {
+    "router": {
+        "name": "Router",
+        "ip": "192.168.1.1",
+        "checks": [
+            {"type": "ping"},
+            {"type": "port", "port": 80, "label": "HTTP"},
+            {"type": "port", "port": 443, "label": "HTTPS"},
+        ],
+    },
+    "dns": {
+        "name": "DNS/Pi-hole",
+        "ip": "192.168.1.41",
+        "checks": [
+            {"type": "ping"},
+            {"type": "port", "port": 53, "label": "DNS"},
+            {"type": "port", "port": 80, "label": "HTTP"},
+        ],
+    },
+    "proxmox1": {
+        "name": "Proxmox-1",
+        "ip": "192.168.1.20",
+        "checks": [
+            {"type": "ping"},
+            {"type": "port", "port": 8006, "label": "Web UI"},
+            {"type": "port", "port": 22, "label": "SSH"},
+        ],
+    },
+    "proxmox2": {
+        "name": "Proxmox-2",
+        "ip": "192.168.1.21",
+        "checks": [
+            {"type": "ping"},
+            {"type": "port", "port": 8006, "label": "Web UI"},
+            {"type": "port", "port": 22, "label": "SSH"},
+        ],
+    },
+    "proxmox3": {
+        "name": "Proxmox-3",
+        "ip": "192.168.1.22",
+        "checks": [
+            {"type": "ping"},
+            {"type": "port", "port": 8006, "label": "Web UI"},
+            {"type": "port", "port": 22, "label": "SSH"},
+        ],
+    },
+}
+
+# Thread-safe storage for check results
+results_lock = threading.Lock()
+check_results = {}
+
+# Queue for SSE subscribers
+subscribers = []
+subscribers_lock = threading.Lock()
+
+
+def ping_host(ip, timeout=2):
+    """Ping a host and return (success, response_time_ms)."""
+    system = platform.system().lower()
+
+    if system == "darwin":
+        # macOS uses -t for timeout
+        cmd = ["ping", "-c", "1", "-t", str(timeout), ip]
+    else:
+        # Linux uses -W for timeout
+        cmd = ["ping", "-c", "1", "-W", str(timeout), ip]
+
+    try:
+        start = time.time()
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 1
+        )
+        elapsed = (time.time() - start) * 1000
+
+        if result.returncode == 0:
+            return True, round(elapsed, 1)
+        return False, None
+    except (subprocess.TimeoutExpired, Exception):
+        return False, None
+
+
+def check_port(ip, port, timeout=2):
+    """Check if a TCP port is open and return (success, response_time_ms)."""
+    try:
+        start = time.time()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((ip, port))
+        elapsed = (time.time() - start) * 1000
+        sock.close()
+
+        if result == 0:
+            return True, round(elapsed, 1)
+        return False, None
+    except Exception:
+        return False, None
+
+
+def run_checks():
+    """Run all health checks and update results."""
+    new_results = {}
+    check_time = datetime.now().strftime("%H:%M:%S")
+
+    for host_id, host_config in HOSTS.items():
+        host_results = {
+            "name": host_config["name"],
+            "ip": host_config["ip"],
+            "checks": [],
+            "last_check": check_time,
+        }
+
+        for check in host_config["checks"]:
+            if check["type"] == "ping":
+                success, response_time = ping_host(host_config["ip"])
+                host_results["checks"].append({
+                    "label": "Ping",
+                    "status": "up" if success else "down",
+                    "response_time": response_time,
+                })
+            elif check["type"] == "port":
+                success, response_time = check_port(
+                    host_config["ip"], check["port"]
+                )
+                host_results["checks"].append({
+                    "label": check["label"],
+                    "status": "up" if success else "down",
+                    "response_time": response_time,
+                })
+
+        new_results[host_id] = host_results
+
+    with results_lock:
+        check_results.clear()
+        check_results.update(new_results)
+
+    return new_results
+
+
+def broadcast_results(results):
+    """Send results to all SSE subscribers."""
+    data = json.dumps(results)
+    message = f"data: {data}\n\n"
+
+    with subscribers_lock:
+        dead_subscribers = []
+        for q in subscribers:
+            try:
+                q.put_nowait(message)
+            except Exception:
+                dead_subscribers.append(q)
+
+        for q in dead_subscribers:
+            subscribers.remove(q)
+
+
+def health_check_loop():
+    """Background thread that runs health checks periodically."""
+    while True:
+        results = run_checks()
+        broadcast_results(results)
+        time.sleep(5)
+
+
+@app.route("/")
+def index():
+    """Serve the dashboard page."""
+    return render_template("index.html")
+
+
+@app.route("/events")
+def events():
+    """SSE endpoint for real-time updates."""
+    def generate():
+        q = queue.Queue()
+
+        with subscribers_lock:
+            subscribers.append(q)
+
+        try:
+            # Send current state immediately
+            with results_lock:
+                if check_results:
+                    data = json.dumps(check_results)
+                    yield f"data: {data}\n\n"
+
+            while True:
+                try:
+                    message = q.get(timeout=30)
+                    yield message
+                except queue.Empty:
+                    # Send keepalive
+                    yield ": keepalive\n\n"
+        finally:
+            with subscribers_lock:
+                if q in subscribers:
+                    subscribers.remove(q)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+
+if __name__ == "__main__":
+    # Start background health check thread
+    checker_thread = threading.Thread(target=health_check_loop, daemon=True)
+    checker_thread.start()
+
+    # Run Flask app
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

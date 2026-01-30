@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Diagnostic Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            background: #16213e;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        header h1 {
+            font-size: 1.4rem;
+            font-weight: 600;
+        }
+
+        .last-update {
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+
+        .connection-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #888;
+        }
+
+        .connection-dot.connected {
+            background: #00c853;
+            box-shadow: 0 0 8px #00c853;
+        }
+
+        .connection-dot.disconnected {
+            background: #ff1744;
+            box-shadow: 0 0 8px #ff1744;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 20px;
+        }
+
+        .host-card {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #0f3460;
+        }
+
+        .host-card.all-up {
+            border-color: #00c853;
+        }
+
+        .host-card.some-down {
+            border-color: #ff1744;
+        }
+
+        .host-header {
+            margin-bottom: 15px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #0f3460;
+        }
+
+        .host-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .host-ip {
+            font-size: 0.85rem;
+            color: #888;
+            font-family: monospace;
+        }
+
+        .check-list {
+            list-style: none;
+        }
+
+        .check-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+            font-size: 0.9rem;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .status-dot.up {
+            background: #00c853;
+            box-shadow: 0 0 6px #00c853;
+        }
+
+        .status-dot.down {
+            background: #ff1744;
+            box-shadow: 0 0 6px #ff1744;
+        }
+
+        .status-dot.checking {
+            background: #ffc107;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .check-label {
+            flex-grow: 1;
+        }
+
+        .check-status {
+            font-weight: 500;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+        }
+
+        .check-status.up {
+            color: #00c853;
+        }
+
+        .check-status.down {
+            color: #ff1744;
+        }
+
+        .check-status.checking {
+            color: #ffc107;
+        }
+
+        .response-time {
+            font-size: 0.75rem;
+            color: #888;
+            min-width: 50px;
+            text-align: right;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #0f3460;
+            border-top-color: #00c853;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Network Diagnostic Dashboard</h1>
+        <div class="connection-status">
+            <span class="connection-dot" id="connectionDot"></span>
+            <span id="connectionText">Connecting...</span>
+        </div>
+        <div class="last-update">
+            Last update: <span id="lastUpdate">--:--:--</span>
+        </div>
+    </header>
+
+    <main id="dashboard">
+        <div class="loading">
+            <div class="loading-spinner"></div>
+            <p>Connecting to server...</p>
+        </div>
+    </main>
+
+    <script>
+        const dashboard = document.getElementById('dashboard');
+        const lastUpdateEl = document.getElementById('lastUpdate');
+        const connectionDot = document.getElementById('connectionDot');
+        const connectionText = document.getElementById('connectionText');
+
+        let eventSource = null;
+
+        function setConnectionStatus(connected) {
+            if (connected) {
+                connectionDot.className = 'connection-dot connected';
+                connectionText.textContent = 'Connected';
+            } else {
+                connectionDot.className = 'connection-dot disconnected';
+                connectionText.textContent = 'Disconnected';
+            }
+        }
+
+        function renderDashboard(data) {
+            let html = '<div class="grid">';
+
+            for (const [hostId, host] of Object.entries(data)) {
+                const allUp = host.checks.every(c => c.status === 'up');
+                const cardClass = allUp ? 'all-up' : 'some-down';
+
+                html += `
+                    <div class="host-card ${cardClass}">
+                        <div class="host-header">
+                            <div class="host-name">${escapeHtml(host.name)}</div>
+                            <div class="host-ip">${escapeHtml(host.ip)}</div>
+                        </div>
+                        <ul class="check-list">
+                `;
+
+                for (const check of host.checks) {
+                    const responseTime = check.response_time
+                        ? `${check.response_time}ms`
+                        : '--';
+
+                    html += `
+                        <li class="check-item">
+                            <span class="status-dot ${check.status}"></span>
+                            <span class="check-label">${escapeHtml(check.label)}</span>
+                            <span class="check-status ${check.status}">${check.status}</span>
+                            <span class="response-time">${responseTime}</span>
+                        </li>
+                    `;
+                }
+
+                html += `
+                        </ul>
+                    </div>
+                `;
+            }
+
+            html += '</div>';
+            dashboard.innerHTML = html;
+
+            // Update timestamp from first host
+            const firstHost = Object.values(data)[0];
+            if (firstHost && firstHost.last_check) {
+                lastUpdateEl.textContent = firstHost.last_check;
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function connect() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource('/events');
+
+            eventSource.onopen = function() {
+                setConnectionStatus(true);
+            };
+
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    renderDashboard(data);
+                } catch (e) {
+                    console.error('Failed to parse event data:', e);
+                }
+            };
+
+            eventSource.onerror = function() {
+                setConnectionStatus(false);
+                eventSource.close();
+                // Reconnect after 3 seconds
+                setTimeout(connect, 3000);
+            };
+        }
+
+        // Start connection
+        connect();
+    </script>
+</body>
+</html>
