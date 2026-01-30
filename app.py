@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.request
 from datetime import datetime
 from flask import Flask, Response, render_template
 
@@ -57,6 +58,24 @@ HOSTS = {
         "checks": [
             {"type": "ping"},
             {"type": "port", "port": 8006, "label": "Web UI"},
+            {"type": "port", "port": 22, "label": "SSH"},
+        ],
+    },
+    "proxxy": {
+        "name": "Proxxy (NPM)",
+        "ip": "192.168.1.34",
+        "checks": [
+            {"type": "ping"},
+            {"type": "port", "port": 80, "label": "HTTP"},
+            {"type": "port", "port": 443, "label": "HTTPS"},
+            {"type": "port", "port": 81, "label": "Admin"},
+        ],
+    },
+    "wireguard": {
+        "name": "WireGuard",
+        "ip": "192.168.1.208",
+        "checks": [
+            {"type": "ping"},
             {"type": "port", "port": 22, "label": "SSH"},
         ],
     },
@@ -116,6 +135,45 @@ def check_port(ip, port, timeout=2):
         return False, None
 
 
+def get_external_ip(timeout=5):
+    """Get external IP address using ipify API."""
+    try:
+        req = urllib.request.Request(
+            "https://api.ipify.org",
+            headers={"User-Agent": "network-dashboard"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.read().decode("utf-8").strip()
+    except Exception:
+        return None
+
+
+def resolve_dns(hostname, dns_server="8.8.8.8", timeout=5):
+    """Resolve hostname to IP address using specified DNS server."""
+    try:
+        # Use dig to query specific DNS server
+        cmd = ["dig", "+short", f"@{dns_server}", hostname, "A"]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # dig may return CNAME then IP, find the IP address
+            for line in result.stdout.strip().split('\n'):
+                line = line.strip()
+                # Check if line looks like an IPv4 address
+                if line and line[0].isdigit() and '.' in line:
+                    return line
+        return None
+    except Exception:
+        return None
+
+
+DDNS_HOSTNAME = "www.arctian.org"
+
+
 def run_checks():
     """Run all health checks and update results."""
     new_results = {}
@@ -148,6 +206,39 @@ def run_checks():
                 })
 
         new_results[host_id] = host_results
+
+    # DDNS check - compare external IP with DNS resolution
+    external_ip = get_external_ip()
+    dns_ip = resolve_dns(DDNS_HOSTNAME)
+
+    if external_ip and dns_ip:
+        match_status = "up" if external_ip == dns_ip else "warning"
+    else:
+        match_status = "down"
+
+    new_results["ddns"] = {
+        "name": "Dynamic DNS",
+        "ip": DDNS_HOSTNAME,
+        "type": "ddns",
+        "checks": [
+            {
+                "label": "External IP",
+                "status": "up" if external_ip else "down",
+                "value": external_ip or "unavailable",
+            },
+            {
+                "label": DDNS_HOSTNAME,
+                "status": "up" if dns_ip else "down",
+                "value": dns_ip or "unavailable",
+            },
+            {
+                "label": "Match",
+                "status": match_status,
+                "value": "yes" if match_status == "up" else "no" if match_status == "warning" else "unknown",
+            },
+        ],
+        "last_check": check_time,
+    }
 
     with results_lock:
         check_results.clear()

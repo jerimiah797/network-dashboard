@@ -84,6 +84,10 @@
             border-color: #ff1744;
         }
 
+        .host-card.warning {
+            border-color: #ffc107;
+        }
+
         .host-header {
             margin-bottom: 15px;
             padding-bottom: 12px;
@@ -136,6 +140,11 @@
             animation: pulse 1s infinite;
         }
 
+        .status-dot.warning {
+            background: #ffc107;
+            box-shadow: 0 0 6px #ffc107;
+        }
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.4; }
@@ -160,6 +169,10 @@
         }
 
         .check-status.checking {
+            color: #ffc107;
+        }
+
+        .check-status.warning {
             color: #ffc107;
         }
 
@@ -232,8 +245,21 @@
             let html = '<div class="grid">';
 
             for (const [hostId, host] of Object.entries(data)) {
+                // Determine card status class
+                let cardClass;
+                const hasWarning = host.checks.some(c => c.status === 'warning');
+                const hasDown = host.checks.some(c => c.status === 'down');
                 const allUp = host.checks.every(c => c.status === 'up');
-                const cardClass = allUp ? 'all-up' : 'some-down';
+
+                if (hasDown) {
+                    cardClass = 'some-down';
+                } else if (hasWarning) {
+                    cardClass = 'warning';
+                } else if (allUp) {
+                    cardClass = 'all-up';
+                } else {
+                    cardClass = '';
+                }
 
                 html += `
                     <div class="host-card ${cardClass}">
@@ -245,16 +271,19 @@
                 `;
 
                 for (const check of host.checks) {
-                    const responseTime = check.response_time
-                        ? `${check.response_time}ms`
-                        : '--';
+                    // DDNS checks have 'value', regular checks have 'response_time'
+                    const rightText = check.value
+                        ? escapeHtml(check.value)
+                        : (check.response_time ? `${check.response_time}ms` : '--');
+
+                    const statusText = check.status === 'warning' ? 'MISMATCH' : check.status;
 
                     html += `
                         <li class="check-item">
                             <span class="status-dot ${check.status}"></span>
                             <span class="check-label">${escapeHtml(check.label)}</span>
-                            <span class="check-status ${check.status}">${check.status}</span>
-                            <span class="response-time">${responseTime}</span>
+                            <span class="check-status ${check.status}">${statusText}</span>
+                            <span class="response-time">${rightText}</span>
                         </li>
                     `;
                 }
