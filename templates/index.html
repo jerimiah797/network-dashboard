@@ -232,6 +232,83 @@
 
         let eventSource = null;
 
+        // Screen control
+        const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+        let idleTimer = null;
+        let screenOn = true;
+        let hasErrors = false;
+
+        function resetIdleTimer() {
+            if (idleTimer) clearTimeout(idleTimer);
+            // Only set idle timer if there are no errors
+            if (!hasErrors) {
+                idleTimer = setTimeout(() => {
+                    if (screenOn) {
+                        setScreen(false);
+                    }
+                }, IDLE_TIMEOUT_MS);
+            }
+        }
+
+        function checkForErrors(data) {
+            for (const hostId in data) {
+                const host = data[hostId];
+                for (const check of host.checks || []) {
+                    if (check.status === 'down' || check.status === 'warning') {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        function updateErrorState(data) {
+            const hadErrors = hasErrors;
+            hasErrors = checkForErrors(data);
+
+            // Errors just cleared - start the idle timer
+            if (hadErrors && !hasErrors) {
+                resetIdleTimer();
+            }
+            // Errors just appeared - cancel the idle timer
+            if (!hadErrors && hasErrors && idleTimer) {
+                clearTimeout(idleTimer);
+                idleTimer = null;
+            }
+        }
+
+        function setScreen(on) {
+            fetch(on ? '/screen/on' : '/screen/off', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        screenOn = on;
+                        if (on) resetIdleTimer();
+                    }
+                })
+                .catch(() => {});
+        }
+
+        function toggleScreen() {
+            fetch('/screen/toggle', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        screenOn = data.brightness > 0;
+                        if (screenOn && !hasErrors) resetIdleTimer();
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // Single tap/click to toggle screen
+        document.addEventListener('click', (e) => {
+            toggleScreen();
+        });
+
+        // Start idle timer
+        resetIdleTimer();
+
         function setConnectionStatus(connected) {
             if (connected) {
                 connectionDot.className = 'connection-dot connected';
@@ -303,6 +380,9 @@
             if (firstHost && firstHost.last_check) {
                 lastUpdateEl.textContent = firstHost.last_check;
             }
+
+            // Update error state for screen control
+            updateErrorState(data);
         }
 
         function escapeHtml(text) {
@@ -330,6 +410,14 @@
                     console.error('Failed to parse event data:', e);
                 }
             };
+
+            // Listen for wake events (triggered by new errors)
+            eventSource.addEventListener('wake', function(event) {
+                if (!screenOn) {
+                    setScreen(true);
+                }
+                resetIdleTimer();
+            });
 
             eventSource.onerror = function() {
                 setConnectionStatus(false);

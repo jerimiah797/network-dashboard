@@ -2,6 +2,7 @@
 """Network Diagnostic Dashboard - Real-time monitoring with SSE."""
 
 import json
+import os
 import platform
 import queue
 import socket
@@ -10,9 +11,16 @@ import threading
 import time
 import urllib.request
 from datetime import datetime
-from flask import Flask, Response, render_template
+from flask import Flask, Response, render_template, jsonify
 
 app = Flask(__name__)
+
+# Backlight control (Raspberry Pi DSI display)
+BACKLIGHT_PATH = "/sys/class/backlight/10-0045/brightness"
+BACKLIGHT_MAX = 255
+
+# Track error state for wake-on-error
+previous_has_errors = False
 
 # Host/service configuration
 HOSTS = {
@@ -175,6 +183,34 @@ DDNS_HOSTNAME = "www.arctian.org"
 DDNS_LABEL = "DYN"
 
 
+def get_brightness():
+    """Get current backlight brightness."""
+    try:
+        with open(BACKLIGHT_PATH, "r") as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
+def set_brightness(value):
+    """Set backlight brightness."""
+    try:
+        with open(BACKLIGHT_PATH, "w") as f:
+            f.write(str(value))
+        return True
+    except Exception:
+        return False
+
+
+def has_errors(results):
+    """Check if any results have errors (down or warning status)."""
+    for host_data in results.values():
+        for check in host_data.get("checks", []):
+            if check.get("status") in ("down", "warning"):
+                return True
+    return False
+
+
 def run_checks():
     """Run all health checks and update results."""
     new_results = {}
@@ -250,13 +286,23 @@ def run_checks():
 
 def broadcast_results(results):
     """Send results to all SSE subscribers."""
+    global previous_has_errors
+
     data = json.dumps(results)
     message = f"data: {data}\n\n"
+
+    # Check for new errors (transition from no errors to errors)
+    current_has_errors = has_errors(results)
+    wake_screen = current_has_errors and not previous_has_errors
+    previous_has_errors = current_has_errors
 
     with subscribers_lock:
         dead_subscribers = []
         for q in subscribers:
             try:
+                # Send wake event if new errors detected
+                if wake_screen:
+                    q.put_nowait("event: wake\ndata: errors\n\n")
                 q.put_nowait(message)
             except Exception:
                 dead_subscribers.append(q)
@@ -315,6 +361,47 @@ def events():
             "Connection": "keep-alive",
         }
     )
+
+
+@app.route("/screen/on", methods=["POST"])
+def screen_on():
+    """Turn screen on."""
+    success = set_brightness(BACKLIGHT_MAX)
+    return jsonify({"success": success, "brightness": BACKLIGHT_MAX})
+
+
+@app.route("/screen/off", methods=["POST"])
+def screen_off():
+    """Turn screen off."""
+    success = set_brightness(0)
+    return jsonify({"success": success, "brightness": 0})
+
+
+@app.route("/screen/toggle", methods=["POST"])
+def screen_toggle():
+    """Toggle screen on/off."""
+    current = get_brightness()
+    if current is None:
+        return jsonify({"success": False, "error": "Cannot read brightness"})
+
+    if current > 0:
+        success = set_brightness(0)
+        new_brightness = 0
+    else:
+        success = set_brightness(BACKLIGHT_MAX)
+        new_brightness = BACKLIGHT_MAX
+
+    return jsonify({"success": success, "brightness": new_brightness})
+
+
+@app.route("/screen/status")
+def screen_status():
+    """Get current screen status."""
+    brightness = get_brightness()
+    return jsonify({
+        "brightness": brightness,
+        "on": brightness is not None and brightness > 0
+    })
 
 
 if __name__ == "__main__":
