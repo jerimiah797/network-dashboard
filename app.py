@@ -172,6 +172,7 @@ def resolve_dns(hostname, dns_server="8.8.8.8", timeout=5):
 
 
 DDNS_HOSTNAME = "www.arctian.org"
+DDNS_LABEL = "DYN"
 
 
 def run_checks():
@@ -222,12 +223,12 @@ def run_checks():
         "type": "ddns",
         "checks": [
             {
-                "label": "External IP",
+                "label": "WAN",
                 "status": "up" if external_ip else "down",
                 "value": external_ip or "unavailable",
             },
             {
-                "label": DDNS_HOSTNAME,
+                "label": DDNS_LABEL,
                 "status": "up" if dns_ip else "down",
                 "value": dns_ip or "unavailable",
             },
