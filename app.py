@@ -17,7 +17,7 @@ app = Flask(__name__)
 
 # Backlight control (Raspberry Pi DSI display)
 BACKLIGHT_PATH = "/sys/class/backlight/10-0045/brightness"
-BACKLIGHT_MAX = 255
+BACKLIGHT_MAX = 155
 
 # Track error state for wake-on-error
 previous_has_errors = False
@@ -47,8 +47,11 @@ HOSTS = {
         "ip": "192.168.1.20",
         "checks": [
             {"type": "ping"},
+            # SSH probe dropped 2026-08-26: 8006 already proves the node is up,
+            # and proves more -- pveproxy answering means the Proxmox stack is
+            # alive, whereas sshd happily keeps listening on a node whose cluster
+            # services are broken.
             {"type": "port", "port": 8006, "label": "Web UI"},
-            {"type": "port", "port": 22, "label": "SSH"},
         ],
     },
     "proxmox2": {
@@ -56,8 +59,11 @@ HOSTS = {
         "ip": "192.168.1.21",
         "checks": [
             {"type": "ping"},
+            # SSH probe dropped 2026-08-26: 8006 already proves the node is up,
+            # and proves more -- pveproxy answering means the Proxmox stack is
+            # alive, whereas sshd happily keeps listening on a node whose cluster
+            # services are broken.
             {"type": "port", "port": 8006, "label": "Web UI"},
-            {"type": "port", "port": 22, "label": "SSH"},
         ],
     },
     "proxmox3": {
@@ -65,8 +71,11 @@ HOSTS = {
         "ip": "192.168.1.22",
         "checks": [
             {"type": "ping"},
+            # SSH probe dropped 2026-08-26: 8006 already proves the node is up,
+            # and proves more -- pveproxy answering means the Proxmox stack is
+            # alive, whereas sshd happily keeps listening on a node whose cluster
+            # services are broken.
             {"type": "port", "port": 8006, "label": "Web UI"},
-            {"type": "port", "port": 22, "label": "SSH"},
         ],
     },
     "proxxy": {
@@ -84,6 +93,9 @@ HOSTS = {
         "ip": "192.168.1.208",
         "checks": [
             {"type": "ping"},
+            # SSH kept here: WireGuard is UDP/51820 so it cannot be TCP-probed,
+            # and nothing else on this host listens on TCP (verified 2026-08-26).
+            # At 30s that is ~2.9k sshd lines a day instead of 17k.
             {"type": "port", "port": 22, "label": "SSH"},
         ],
     },
@@ -316,7 +328,12 @@ def health_check_loop():
     while True:
         results = run_checks()
         broadcast_results(results)
-        time.sleep(5)
+        # 30s, not 5s. At 5s this hit every host 17,280 times a day, and the SSH
+        # probes alone added ~69k "Connection closed by 192.168.1.40" lines a day
+        # to the Proxmox nodes' sshd journals -- enough to make
+        # `journalctl -u ssh` useless for spotting a real login. A wall dashboard
+        # does not need 5-second resolution on "is the box up".
+        time.sleep(30)
 
 
 @app.route("/")
