@@ -29,8 +29,15 @@ HOSTS = {
         "ip": "192.168.1.1",
         "checks": [
             {"type": "ping"},
-            {"type": "port", "port": 80, "label": "HTTP"},
-            {"type": "port", "port": 443, "label": "HTTPS"},
+            # The UXG-Max serves NO web UI on its LAN address -- 80 and 443 are
+            # both refused. Management moved to the controller on
+            # 192.168.1.165:11443. The HTTP/HTTPS checks here were the C2100T's
+            # and went permanently red at the router swap; a tile that is always
+            # red just trains you to ignore the panel. Replaced by the question
+            # that actually matters for a gateway: does traffic get THROUGH it?
+            # Targets an external address deliberately -- ping only proves the
+            # box answers, not that it is routing.
+            {"type": "port", "port": 53, "host": "1.1.1.1", "label": "Route"},
         ],
     },
     "dns": {
@@ -245,8 +252,10 @@ def run_checks():
                     "response_time": response_time,
                 })
             elif check["type"] == "port":
+                # A check may target a different host than the tile it is
+                # shown under; see the Router entry.
                 success, response_time = check_port(
-                    host_config["ip"], check["port"]
+                    check.get("host", host_config["ip"]), check["port"]
                 )
                 host_results["checks"].append({
                     "label": check["label"],
