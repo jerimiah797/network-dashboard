@@ -301,10 +301,27 @@
                 .catch(() => {});
         }
 
-        // Single tap/click to toggle screen
-        document.addEventListener('click', (e) => {
-            toggleScreen();
-        });
+        // Single tap/click anywhere toggles the screen -- deliberately the WHOLE
+        // document, not a button. On the panel the point is that one effortless
+        // touch works without having to look for a target.
+        //
+        // But that same listener fires in ANY browser showing this page, and
+        // /screen/toggle writes the Pi's real backlight, so an incidental tap on
+        // a phone across the house blanks the panel in the other room. Worse, it
+        // is indistinguishable from the failure where the kiosk tab is dead and
+        // taps do nothing (2026-09-04) -- so it can imitate a fault we would then
+        // go looking for.
+        //
+        // The guard is on the CLIENT, not the endpoints: /screen/on|off|toggle
+        // stay reachable so the screen can still be driven deliberately (curl, a
+        // script, the wake-on-error path in app.py). What goes away is the
+        // accident.
+        const isKioskHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname);
+        if (isKioskHost) {
+            document.addEventListener('click', (e) => {
+                toggleScreen();
+            });
+        }
 
         // Start idle timer
         resetIdleTimer();
