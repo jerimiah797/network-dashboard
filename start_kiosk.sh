@@ -45,6 +45,18 @@ while [ "$i" -lt 60 ]; do
     sleep 2
 done
 
+# Chromium asks the compositor for fullscreen at startup. If the Wayland output
+# is OFF at that moment -- which it is any time swayidle has blanked it after
+# 600s -- the request does not apply, and the window comes up WINDOWED with an
+# address bar even though --kiosk is right there in argv. Verified both ways on
+# 2026-09-04: launched with the output off it was windowed; launched with it on
+# it was fullscreen.
+#
+# Idempotent, and harmless from labwc autostart where the output is already on.
+if command -v wlopm >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    wlopm --on '*' >/dev/null 2>&1
+fi
+
 exec chromium \
     --kiosk \
     --ozone-platform=wayland \
